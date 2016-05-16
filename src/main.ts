@@ -8,7 +8,7 @@ import os = require('os');
 import path = require('path');
 import vscode = require('vscode');
 import settingsManager = require('./settings');
-import { LanguageClient, LanguageClientOptions, Executable, RequestType, NotificationType } from 'vscode-languageclient';
+import { LanguageClient, LanguageClientOptions, Executable, RequestType, NotificationType, StreamInfo } from 'vscode-languageclient';
 
 import { registerExpandAliasCommand } from './features/ExpandAlias';
 import { registerShowHelpCommand } from './features/ShowOnlineHelp';
@@ -16,6 +16,8 @@ import { registerOpenInISECommand } from './features/OpenInISE';
 import { registerPowerShellFindModuleCommand } from './features/PowerShellFindModule';
 import { registerConsoleCommands } from './features/Console';
 import { registerExtensionCommands } from './features/ExtensionCommands';
+
+import net = require('net');
 
 var languageServerClient: LanguageClient = undefined;
 
@@ -88,16 +90,16 @@ export function activate(context: vscode.ExtensionContext): void {
         try
         {
             let serverPath = resolveLanguageServerPath(settings);
-            let serverOptions = {
-                run: {
-                    command: serverPath,
-                    args: args
-                },
-                debug: {
-                    command: serverPath,
-                    args: ['/waitForDebugger']
-                }
-            };
+            // let serverOptions = {
+            //     run: {
+            //         command: serverPath,
+            //         args: args
+            //     },
+            //     debug: {
+            //         command: serverPath,
+            //         args: ['/waitForDebugger']
+            //     }
+            // };
 
             let clientOptions: LanguageClientOptions = {
                 documentSelector: [PowerShellLanguageId],
@@ -107,10 +109,25 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
             }
 
+            let pipeName = "\\\\.\\pipe\\PSES-VSCode-Language";//-" + process.env.VSCODE_PID;
+
+            let connectFunc = () => {
+                return new Promise<StreamInfo>(
+                    (resolve, reject) => {
+                        var socket = net.connect(pipeName);
+                        socket.on(
+                            'connect',
+                            function() {
+                                console.log("Pipe connected!");
+                                resolve({writer: socket, reader: socket})
+                            });
+                    });
+            };
+
             languageServerClient =
                 new LanguageClient(
                     'PowerShell Editor Services',
-                    serverOptions,
+                    connectFunc,
                     clientOptions);
 
             languageServerClient.onReady().then(
