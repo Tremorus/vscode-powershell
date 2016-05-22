@@ -3,6 +3,7 @@ examples/Release/
 examples/Tests/foo*.txt
 out/
 node_modules/
+logs/
 vscode-powershell.zip
 vscps-preview.zip
 *.vsix

@@ -10,6 +10,7 @@ import cp = require('child_process');
 import path = require('path');
 import vscode = require('vscode');
 import settingsManager = require('./settings');
+import { StringDecoder } from 'string_decoder';
 import { LanguageClient, LanguageClientOptions, Executable, RequestType, NotificationType, StreamInfo } from 'vscode-languageclient';
 
 import { registerExpandAliasCommand } from './features/ExpandAlias';
@@ -84,7 +85,8 @@ export function activate(context: vscode.ExtensionContext): void {
             '-HostName "Visual Studio Code Host" ' +
             '-HostProfileId "Microsoft.VSCode" ' +
             '-HostVersion "' + hostVersion + '" ' +
-            '-BundledModulesPath "' + settings.developer.bundledModulePath + '" ';
+            '-BundledModulesPath "' + settings.developer.bundledModulePath + '" ' +
+            '-WaitForCompletion ';
 
         if (settings.developer.editorServicesWaitForDebugger) {
             startArgs += '-WaitForDebugger ';
@@ -107,7 +109,7 @@ export function activate(context: vscode.ExtensionContext): void {
                             "powershell.exe cannot be found or is not accessible at path " + powerShellExePath);
                     }
                     else {
-                        startLanguageClient(
+                        startPowerShell(
                             powerShellExePath,
                             startArgs);
                     }
@@ -120,77 +122,124 @@ export function activate(context: vscode.ExtensionContext): void {
                 powerShellExePath = process.env.windir + '\\Sysnative\\WindowsPowerShell\\v1.0\\powershell.exe';
             }
 
-            startLanguageClient(
+            startPowerShell(
                 powerShellExePath,
                 startArgs);
         }
     }
 }
 
-function startLanguageClient(powerShellExePath: string, startArgs: string) {
+function startPowerShell(powerShellExePath: string, startArgs: string) {
     try
     {
-        let pipeName = "PSES-VSCode-LanguageService-" + process.env.VSCODE_PID;
+        let languageServicePipeName = "PSES-VSCode-LanguageService-" + process.env.VSCODE_PID;
+        let debugServicePipeName = "PSES-VSCode-DebugService-" + process.env.VSCODE_PID;
+
         let startScriptPath =
             path.resolve(
                 __dirname,
                 '../scripts/Start-EditorServices.ps1');
 
-        startArgs += '-WaitForCompletion -LanguageServicePipeName "' + pipeName + '" ';
+        var logBasePath = path.resolve(__dirname, "../logs");
+        ensurePathExists(logBasePath);
+
+        var editorServicesLogName = getLogName("EditorServices");
+        var powerShellLogName = getLogName("PowerShell");
+
+        startArgs +=
+            '-LogPath "' + path.resolve(logBasePath, editorServicesLogName) + '" ' +
+            '-LanguageServicePipeName "' + languageServicePipeName + '" ' +
+            '-DebugServicePipeName "' + debugServicePipeName + '" ';
 
         let args = [
             '-NoProfile',
             '-NonInteractive',
             '-ExecutionPolicy', 'Unrestricted',
-            '-Command', startScriptPath + ' ' +startArgs
+            '-Command', startScriptPath + ' ' + startArgs
         ]
 
         // Launch PowerShell as child process
         powerShellProcess = cp.spawn(powerShellExePath, args);
+
+        // Open a log file to be used for PowerShell.exe output
+        var powerShellLogWriter =
+            fs.createWriteStream(
+                path.resolve(logBasePath, powerShellLogName))
+
+        var decoder = new StringDecoder('utf8');
+        powerShellProcess.stdout.on(
+            'data',
+            (data: Buffer) => {
+                console.log("powershell.exe - OUTPUT: " + data);
+                powerShellLogWriter.write("OUTPUT: " + data);
+                if (decoder.write(data).trim() == "PowerShell Editor Services host has started.") {
+                    console.log("Starting language client!");
+                    startLanguageClient(languageServicePipeName);
+                }
+            });
+
         powerShellProcess.stderr.on(
             'data',
             (data) => {
                 console.log("powershell.exe - ERROR: " + data);
+                powerShellLogWriter.write("ERROR: " + data);
             });
 
         powerShellProcess.on(
             'close',
-            (exitCode) => { console.log("powershell.exe terminated with exit code: " + exitCode); });
+            (exitCode) => {
+                languageServerClient.stop();
+                console.log("powershell.exe terminated with exit code: " + exitCode);
+                powerShellLogWriter.write("\r\npowershell.exe terminated with exit code: " + exitCode + "\r\n");
+            });
 
         console.log("powershell.exe started, pid: " + powerShellProcess.pid + ", exe: " + powerShellExePath);
+        powerShellLogWriter.write("powershell.exe started, pid: " + powerShellProcess.pid + ", exe: " + powerShellExePath + "\r\n\r\n");
 
-        // let connectFunc = () => {
-        //     return new Promise<StreamInfo>(
-        //         (resolve, reject) => {
-        //             var socket = net.connect("\\\\.\\pipe\\" + pipeName);
-        //             socket.on(
-        //                 'connect',
-        //                 function() {
-        //                     console.log("Pipe connected!");
-        //                     resolve({writer: socket, reader: socket})
-        //                 });
-        //         });
-        // };
+        // TODO: Set timeout for response from powershell.exe
+    }
+    catch (e)
+    {
+        vscode.window.showErrorMessage(
+            "The language service could not be started: " + e);
+    }
+}
 
-        // let clientOptions: LanguageClientOptions = {
-        //     documentSelector: [PowerShellLanguageId],
-        //     synchronize: {
-        //         configurationSection: PowerShellLanguageId,
-        //         //fileEvents: vscode.workspace.createFileSystemWatcher('**/.eslintrc')
-        //     }
-        // }
+function startLanguageClient(pipeName: string) {
+    try
+    {
+        let connectFunc = () => {
+            return new Promise<StreamInfo>(
+                (resolve, reject) => {
+                    var socket = net.connect("\\\\.\\pipe\\" + pipeName);
+                    socket.on(
+                        'connect',
+                        function() {
+                            console.log("Pipe connected!");
+                            resolve({writer: socket, reader: socket})
+                        });
+                });
+        };
 
-        // languageServerClient =
-        //     new LanguageClient(
-        //         'PowerShell Editor Services',
-        //         connectFunc,
-        //         clientOptions);
+        let clientOptions: LanguageClientOptions = {
+            documentSelector: [PowerShellLanguageId],
+            synchronize: {
+                configurationSection: PowerShellLanguageId,
+                //fileEvents: vscode.workspace.createFileSystemWatcher('**/.eslintrc')
+            }
+        }
 
-        // languageServerClient.onReady().then(
-        //     () => registerFeatures(),
-        //     (reason) => vscode.window.showErrorMessage("Could not start language service: " + reason));
+        languageServerClient =
+            new LanguageClient(
+                'PowerShell Editor Services',
+                connectFunc,
+                clientOptions);
 
-        // languageServerClient.start();
+        languageServerClient.onReady().then(
+            () => registerFeatures(),
+            (reason) => vscode.window.showErrorMessage("Could not start language service: " + reason));
+
+        languageServerClient.start();
     }
     catch (e)
     {
@@ -220,44 +269,20 @@ export function deactivate(): void {
     setTimeout(() => {}, 3000);
 }
 
-function resolveLanguageServerPath(settings: settingsManager.ISettings): string {
-    var editorServicesHostPath = settings.developer.editorServicesHostPath;
-
-    if (editorServicesHostPath) {
-        console.log("Found Editor Services path from config: " + editorServicesHostPath);
-
-        // Does the path end in a .exe?  Alert the user if so.
-        if (path.extname(editorServicesHostPath) != '') {
-            throw "The editorServicesHostPath setting must point to a directory, not a file.";
+function ensurePathExists(targetPath: string) {
+    // Ensure that the path exists
+    try {
+        fs.mkdirSync(targetPath);
+    }
+    catch (e) {
+        // If the exception isn't to indicate that the folder
+        // exists already, rethrow it.
+        if (e.code != 'EEXIST') {
+            throw e;
         }
-
-        // Make the path absolute if it's not
-        editorServicesHostPath =
-            path.resolve(
-                __dirname,
-                editorServicesHostPath,
-                getHostExeName(settings.useX86Host));
-
-        console.log("    Resolved path to: " + editorServicesHostPath);
     }
-    else {
-        // Use the default path in the extension's 'bin' folder
-        editorServicesHostPath =
-            path.join(
-                __dirname,
-                '..',
-                'bin',
-                getHostExeName(settings.useX86Host));
-
-        console.log("Using default Editor Services path: " + editorServicesHostPath);
-    }
-
-    return editorServicesHostPath;
 }
 
-function getHostExeName(useX86Host: boolean): string {
-    // The useX86Host setting is only relevant on 64-bit OS
-    var is64BitOS = process.env.hasOwnProperty('PROCESSOR_ARCHITEW6432');
-    var archText = useX86Host && is64BitOS ? ".x86" : "";
-    return "Microsoft.PowerShell.EditorServices.Host" + archText + ".exe";
+function getLogName(baseName: string): string {
+    return Math.floor(Date.now() / 1000) + '-' +  baseName + '.log';
 }

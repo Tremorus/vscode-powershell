@@ -4,11 +4,6 @@ param(
     [string]
     $EditorServicesVersion,
 
-    # Mutually exclusive!
-
-    [string]
-    $EditorServicesModulePath,
-
     [Parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
     [string]
@@ -29,15 +24,26 @@ param(
     [string]
     $LanguageServicePipeName,
 
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]
+    $DebugServicePipeName,
+
     [ValidateNotNullOrEmpty()]
     [string]
     $BundledModulesPath,
+
+    [ValidateNotNullOrEmpty()]
+    $LogPath,
 
     [ValidateSet("Normal", "Verbose", "Error")]
     $LogLevel,
 
     [switch]
-    $WaitForCompletion
+    $WaitForCompletion,
+
+    [switch]
+    $WaitForDebugger
 )
 
 # Add BundledModulesPath to $env:PSModulePath
@@ -45,12 +51,16 @@ if ($BundledModulesPath) {
     $env:PSModulePath = $BundledModulesPath + ";" + $env:PSModulePath
 }
 
-# if ($EditorServicesModulePath -ne $null) {
-#     Import-Module "$EditorServicesModulePath\PowerShellEditorServices.psd1" -ErrorAction Stop
-# }
-# else {
-    $parsedVersion = [System.Version]::new($EditorServicesVersion)
-    Import-Module PowerShellEditorServices -RequiredVersion $parsedVersion -ErrorAction Stop
-# }
+$parsedVersion = [System.Version]::new($EditorServicesVersion)
+Import-Module PowerShellEditorServices -RequiredVersion $parsedVersion -ErrorAction Stop
 
-Start-LanguageServer -HostName $HostName -HostProfileId $HostProfileId -HostVersion $HostVersion -LanguageServicePipeName $LanguageServicePipeName -WaitForCompletion:$WaitForCompletion.IsPresent
+Start-EditorServicesHost `
+    -HostName $HostName `
+    -HostProfileId $HostProfileId `
+    -HostVersion $HostVersion `
+    -LogPath $LogPath `
+    -LogLevel $LogLevel `
+    -LanguageServicePipeName $LanguageServicePipeName `
+    -DebugServicePipeName $LanguageServicePipeName `
+    -WaitForCompletion:$WaitForCompletion.IsPresent `
+    -WaitForDebugger:$WaitForDebugger.IsPresent
